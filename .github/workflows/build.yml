@@ -7,9 +7,7 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
-    container:
-      image: ghcr.io/theos/theos:latest
+    runs-on: macos-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -17,19 +15,15 @@ jobs:
       - name: Build dylib
         run: |
           clang -shared \
-                -fobjc-arc \
                 -framework Foundation \
                 -framework StoreKit \
                 -framework UIKit \
                 -o MNMaxUnlock.dylib \
                 src/MNMaxUnlock.mm \
                 -arch arm64 \
-                -isysroot $THEOS/sdks/iPhoneOS16.5.sdk \
+                -isysroot $(xcrun --sdk iphoneos --show-sdk-path) \
                 -miphoneos-version-min=15.0 \
-                -I$THEOS/include
-
-      - name: Check output
-        run: file MNMaxUnlock.dylib && ls -la MNMaxUnlock.dylib
+                -fobjc-arc
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
