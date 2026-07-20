@@ -1,0 +1,6 @@
+*.dylib
+*.ipa
+*.zip
+tmp_mn4/
+Payload/
+.DS_Store
