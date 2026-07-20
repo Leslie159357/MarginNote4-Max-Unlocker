@@ -51,3 +51,4 @@ cd tmp_mn4 && zip -r ../MarginNote4-Unlocked.ipa Payload/
 - 需要已有 **Pro 买断**（App Store 购买过 Pro）
 - 安装后打开 App 会弹出 ✅ Max Unlocked 确认对话框
 - 如果功能未生效，进设置 → 恢复购买
+# Trigger rebuild
