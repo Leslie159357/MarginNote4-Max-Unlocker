@@ -34,12 +34,29 @@ jobs:
           echo "dylib compiled: $(ls -lh MNMaxUnlock.dylib)"
 
       - name: Inject and Repack
+        shell: bash
         run: |
+          set +e
           mkdir -p tmp
-          unzip -qo "input/MarginNote4.ipa" -d tmp 2>/dev/null || true
-          APP="tmp/Payload/MarginNote 4.app"
-          cp MNMaxUnlock.dylib "$APP/"
-          python3 tools/inject.py "$APP/MarginNote 4" "@executable_path/MNMaxUnlock.dylib"
+          echo "=== Extracting IPA ==="
+          unzip -qo "input/MarginNote4.ipa" -d tmp 2>&1
+          echo "=== Checking Payload ==="
+          ls tmp/Payload/ 2>&1 || echo "No Payload dir"
+          find tmp/Payload -maxdepth 2 -name "*.app" 2>&1 || echo "No .app found"
+          APP=$(find tmp/Payload -maxdepth 2 -name "*.app" -type d | head -1)
+          echo "APP bundle: $APP"
+          ls -la "$APP/" | head -5
+          echo "=== Copy dylib ==="
+          cp -v MNMaxUnlock.dylib "$APP/"
+          EXE=$(find "$APP" -maxdepth 1 -type f -perm +111 | head -1)
+          if [ -z "$EXE" ]; then
+            EXE="$APP/MarginNote 4"
+          fi
+          echo "Binary: $EXE"
+          ls -la "$EXE"
+          echo "=== Inject dylib ==="
+          python3 tools/inject.py "$EXE" "@executable_path/MNMaxUnlock.dylib"
+          echo "=== Repack ==="
           cd tmp && zip -q -r ../MarginNote4-Unlocked.ipa Payload/ && cd ..
           echo "Final IPA: $(ls -lh MarginNote4-Unlocked.ipa)"
 
