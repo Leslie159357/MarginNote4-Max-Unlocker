@@ -1,0 +1,32 @@
+task:
+  name: Build MNMaxUnlock.dylib
+  alias: build
+  timeout_in: 15m
+  
+  macos_instance:
+    image: ghcr.io/cirruslabs/macos-runner:sonoma
+  
+  install_script:
+    - xcode-select -p
+    - sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
+  
+  build_script:
+    - |
+      clang -shared \
+            -framework Foundation \
+            -framework StoreKit \
+            -framework UIKit \
+            -o MNMaxUnlock.dylib \
+            src/MNMaxUnlock.mm \
+            -arch arm64 \
+            -isysroot $(xcrun --sdk iphoneos --show-sdk-path) \
+            -miphoneos-version-min=15.0 \
+            -fobjc-arc
+    - ls -la MNMaxUnlock.dylib
+    - file MNMaxUnlock.dylib
+  
+  always:
+    artifacts:
+      path: MNMaxUnlock.dylib
+      type: application/octet-stream
+      format: zip
