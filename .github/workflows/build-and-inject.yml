@@ -36,7 +36,7 @@ jobs:
       - name: Inject and Repack
         run: |
           mkdir -p tmp
-          unzip -q "input/MarginNote4.ipa" -d tmp
+          unzip -qo "input/MarginNote4.ipa" -d tmp 2>/dev/null || true
           APP="tmp/Payload/MarginNote 4.app"
           cp MNMaxUnlock.dylib "$APP/"
           python3 tools/inject.py "$APP/MarginNote 4" "@executable_path/MNMaxUnlock.dylib"
