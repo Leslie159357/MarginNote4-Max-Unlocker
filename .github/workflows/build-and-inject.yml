@@ -1,4 +1,4 @@
-name: Build & Inject MNMaxUnlock.dylib
+name: Build and Inject
 
 on:
   workflow_dispatch:
@@ -15,7 +15,6 @@ jobs:
 
       - name: Download IPA from Release
         run: |
-          # Download the latest release asset
           gh release download v1.0.0 --pattern "MarginNote4.ipa" --dir ./input
         env:
           GH_TOKEN: ${{ github.token }}
@@ -32,132 +31,117 @@ jobs:
                 -isysroot $(xcrun --sdk iphoneos --show-sdk-path) \
                 -miphoneos-version-min=15.0 \
                 -fobjc-arc
-          echo "dylib compiled:"
-          ls -lh MNMaxUnlock.dylib
+          echo "dylib compiled: $(ls -lh MNMaxUnlock.dylib)"
 
-      - name: Inject dylib & repack IPA
+      - name: Inject and Repack
         run: |
-          # Extract IPA
+          # Extract
           mkdir -p tmp
           unzip -q "input/MarginNote4.ipa" -d tmp
-          
           APP="tmp/Payload/MarginNote 4.app"
           cp MNMaxUnlock.dylib "$APP/"
           
-          # Build optool from source (simple C tool)
-          git clone --depth=1 https://github.com/otool/optool.git
-          cd optool
-          # optool uses the Security framework for code signing
-          # For load command injection only, we can use a simpler approach
-          cd ..
-          
-          # Alternative: use Python with macholib to inject LC_LOAD_DYLIB
-          pip3 install macholib
-          
-          python3 -c "
+          # Write inject script
+          cat > inject.py << 'PYEOF'
 import struct, sys
-from macholib.mach_o import LC_LOAD_DYLIB
 
-binary_path = '$APP/MarginNote 4'
+binary_path = 'tmp/Payload/MarginNote 4.app/MarginNote 4'
 dylib_name = b'@executable_path/MNMaxUnlock.dylib\x00'
-while len(dylib_name) % 8: dylib_name += b'\x00'
+while len(dylib_name) % 8:
+    dylib_name += b'\x00'
 
 with open(binary_path, 'rb') as f:
     data = bytearray(f.read())
 
 magic = struct.unpack_from('<I', data, 0)[0]
-assert magic == 0xFEEDFACF, 'Not MH_MAGIC_64'
+assert magic == 0xFEEDFACF, f'Not MH_MAGIC_64: 0x{magic:x}'
 
-# Read header
-_, _, _, _, ncmds, sizeofcmds, flags = struct.unpack_from('<IIIIIII', data, 4)
+cputype, cpusubtype, filetype, ncmds, sizeofcmds = struct.unpack_from('<IIIII', data, 4)
 print(f'ncmds={ncmds} sizeofcmds={sizeofcmds}')
 
-# Build new LC_LOAD_DYLIB command
+# Build new LC_LOAD_DYLIB
+LC_LOAD_DYLIB = 0x35
 cmd_size = 4 + 4 + 16 + len(dylib_name)
 cmd_data = struct.pack('<II', LC_LOAD_DYLIB, cmd_size)
-cmd_data += struct.pack('<IIII', 16, 0, 0, 0)  # LC_DYLIB
+cmd_data += struct.pack('<IIII', 16, 2, 0, 0)  # offset=16, timestamp=2
 cmd_data += dylib_name
-print(f'New command size: {cmd_size}')
+print(f'New command: size={cmd_size}')
 
-# Find load commands end
+# Insert after existing load commands
 lc_end = 32 + sizeofcmds
 remaining = data[lc_end:]
 data = data[:lc_end] + cmd_data + remaining
 
-# Update ncmds and sizeofcmds in header
-new_ncmds = ncmds + 1
-new_sizeofcmds = sizeofcmds + cmd_size
-struct.pack_into('<II', data, 16, new_ncmds)
-struct.pack_into('<I', data, 20, new_sizeofcmds)
+# Update header
+struct.pack_into('<II', data, 16, ncmds + 1)
+struct.pack_into('<I', data, 20, sizeofcmds + cmd_size)
 
 # Update segment/section file offsets
 offset = 32
-for i in range(new_ncmds):
+for i in range(ncmds + 1):
     cmd = struct.unpack_from('<I', data, offset)[0]
     cmdsize = struct.unpack_from('<I', data, offset+4)[0]
     if cmd == 0x19:  # LC_SEGMENT_64
         segname = data[offset+8:offset+24].split(b'\x00')[0].decode()
         old_fileoff = struct.unpack_from('<Q', data, offset+40)[0]
-        old_filesize = struct.unpack_from('<Q', data, offset+48)[0]
         if old_fileoff >= lc_end:
             new_fileoff = old_fileoff + cmd_size
             struct.pack_into('<Q', data, offset+40, new_fileoff)
-            print(f'  {segname}: fileoff 0x{old_fileoff:x} -> 0x{new_fileoff:x}')
-            
+            print(f'  {segname}: 0x{old_fileoff:x} -> 0x{new_fileoff:x}')
+            # Update sections
             nsects = struct.unpack_from('<I', data, offset+64)[0]
             sect_off = offset + 72
-            for j in range(nsects):
-                sect_fileoff = struct.unpack_from('<Q', data, sect_off+48)[0]
-                if sect_fileoff >= lc_end:
-                    struct.pack_into('<Q', data, sect_off+48, sect_fileoff + cmd_size)
+            for _ in range(nsects):
+                sf = struct.unpack_from('<Q', data, sect_off+48)[0]
+                if sf >= lc_end:
+                    struct.pack_into('<Q', data, sect_off+48, sf + cmd_size)
                 sect_off += 80
     offset += cmdsize
 
-# Also update __LINKEDIT info (dyld info offsets stored in LINKEDIT)
-# Parse LC_DYLD_INFO_ONLY and LC_SYMTAB to update their offsets
+# Update LINKEDIT-related load commands
 offset = 32
-for i in range(new_ncmds):
+for _ in range(ncmds + 1):
     cmd = struct.unpack_from('<I', data, offset)[0]
     cmdsize = struct.unpack_from('<I', data, offset+4)[0]
     if cmd == 0x22:  # LC_SYMTAB
-        symoff = struct.unpack_from('<I', data, offset+8)[0]
-        stroff = struct.unpack_from('<I', data, offset+16)[0]
-        if symoff >= lc_end:
-            struct.pack_into('<I', data, offset+8, symoff + cmd_size)
-        if stroff >= lc_end:
-            struct.pack_into('<I', data, offset+16, stroff + cmd_size)
-    if cmd in (0x2A, 0x2B, 0x2C):  # LC_DYLD_INFO / LC_DYLD_INFO_ONLY
-        for field_off in [8, 12, 16, 20, 24, 28]:  # all file offsets in dyld_info_command
-            val = struct.unpack_from('<I', data, offset+field_off)[0]
-            if val >= lc_end:
-                struct.pack_into('<I', data, offset+field_off, val + cmd_size)
-    if cmd == 0x33:  # LC_DYSYMTAB
-        for field_off in [8, 12, 16, 20, 24, 28, 32, 36, 40, 44, 48, 52, 56, 60, 64, 68]:
-            val = struct.unpack_from('<I', data, offset+field_off)[0]
-            if val >= lc_end:
-                struct.pack_into('<I', data, offset+field_off, val + cmd_size)
-    if cmd == 0x32:  # LC_FUNCTION_STARTS
-        fo = struct.unpack_from('<I', data, offset+8)[0]
-        if fo >= lc_end:
-            struct.pack_into('<I', data, offset+8, fo + cmd_size)
-    if cmd == 0x38:  # LC_DATA_IN_CODE
-        fo = struct.unpack_from('<I', data, offset+8)[0]
-        if fo >= lc_end:
-            struct.pack_into('<I', data, offset+8, fo + cmd_size)
+        for field in [8, 16]:
+            v = struct.unpack_from('<I', data, offset+field)[0]
+            if v >= lc_end:
+                struct.pack_into('<I', data, offset+field, v + cmd_size)
+    elif cmd in (0x2A, 0x2B, 0x2C):  # LC_DYLD_INFO variants
+        for field in [8, 12, 16, 20, 24, 28]:
+            v = struct.unpack_from('<I', data, offset+field)[0]
+            if v >= lc_end:
+                struct.pack_into('<I', data, offset+field, v + cmd_size)
+    elif cmd == 0x33:  # LC_DYSYMTAB
+        for field in [8, 12, 16, 20, 24, 28, 32, 36, 40, 44, 48, 52, 56, 60, 64, 68]:
+            v = struct.unpack_from('<I', data, offset+field)[0]
+            if v >= lc_end:
+                struct.pack_into('<I', data, offset+field, v + cmd_size)
+    elif cmd == 0x32:  # LC_FUNCTION_STARTS
+        v = struct.unpack_from('<I', data, offset+8)[0]
+        if v >= lc_end:
+            struct.pack_into('<I', data, offset+8, v + cmd_size)
+    elif cmd == 0x38:  # LC_DATA_IN_CODE
+        v = struct.unpack_from('<I', data, offset+8)[0]
+        if v >= lc_end:
+            struct.pack_into('<I', data, offset+8, v + cmd_size)
     offset += cmdsize
 
 with open(binary_path, 'wb') as f:
     f.write(data)
-print('LC_LOAD_DYLIB injected successfully!')
-"
+print('LC_LOAD_DYLIB injected!')
+PYEOF
           
-          # Repack IPA
+          python3 inject.py
+          
+          # Repack
           cd tmp && zip -q -r ../MarginNote4-Unlocked.ipa Payload/ && cd ..
-          echo "IPA built successfully!"
-          ls -lh MarginNote4-Unlocked.ipa
+          echo "Final IPA: $(ls -lh MarginNote4-Unlocked.ipa)"
 
-      - name: Upload unlocked IPA
+      - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: MarginNote4-Unlocked.ipa
           path: MarginNote4-Unlocked.ipa
+          compression-level: 0
