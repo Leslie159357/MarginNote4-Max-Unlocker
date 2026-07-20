@@ -7,23 +7,25 @@ on:
 
 jobs:
   build:
-    runs-on: macos-latest
+    runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Build dylib
+      - name: Build in Docker
         run: |
-          clang -shared \
-                -framework Foundation \
-                -framework StoreKit \
-                -framework UIKit \
-                -o MNMaxUnlock.dylib \
-                src/MNMaxUnlock.mm \
-                -arch arm64 \
-                -isysroot $(xcrun --sdk iphoneos --show-sdk-path) \
-                -miphoneos-version-min=15.0 \
-                -fobjc-arc
+          docker run --rm -v $PWD:/work -w /work \
+            ghcr.io/theos/theos:latest \
+            clang -shared \
+                  -framework Foundation \
+                  -framework StoreKit \
+                  -framework UIKit \
+                  -o MNMaxUnlock.dylib \
+                  src/MNMaxUnlock.mm \
+                  -arch arm64 \
+                  -isysroot $THEOS/sdks/iPhoneOS16.5.sdk \
+                  -miphoneos-version-min=15.0 \
+                  -fobjc-arc
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
